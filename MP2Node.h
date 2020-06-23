@@ -31,44 +31,15 @@
  * 				4) Client side CRUD APIs
  */
 class MP2Node {
-private:
-	// Vector holding the next two neighbors in the ring who have my replicas
-	vector<Node> hasMyReplicas;
-	// Vector holding the previous two neighbors in the ring whose replicas I have
-	vector<Node> haveReplicasOf;
-	// Ring
-	vector<Node> ring;
-	// Hash Table
-	HashTable * ht;
-	// Member representing this member
-	Member *memberNode;
-	// Params object
-	Params *par;
-	// Object of EmulNet
-	EmulNet * emulNet;
-	// Object of Log
-	Log * log;
-	vector<Node>::iterator selfItr;	
-
-	// DHT replicas
-	map<ReplicaType, map<string, string>> mKVS;
-
-	// on-going client CURD request records
-	map<int, tuple<int, int, int, int>> clientRequest;  // (transID: OpType, total, succeed, timestamp)
-	map<int, map<string, int>> read_reply;   // (transID: value, count)
-
-
 public:
 	MP2Node(Member *memberNode, Params *par, EmulNet *emulNet, Log *log, Address *addressOfMember);
+	
 	Member * getMemberNode() {
 		return this->memberNode;
 	}
 
 	// ring functionalities
 	void updateRing();
-	vector<Node> getMembershipList();
-	size_t hashFunction(string key);
-	void findNeighbors();
 
 	// client side CRUD APIs
 	void clientCreate(string key, string value);
@@ -78,13 +49,9 @@ public:
 
 	// receive messages from Emulnet
 	bool recvLoop();
-	static int enqueueWrapper(void *env, char *buff, int size);
 
 	// handle messages from receiving queue
 	void checkMessages();
-
-	// coordinator dispatches messages to corresponding nodes
-	void dispatchMessages(Message message);
 
 	// find the addresses of nodes that are responsible for a key
 	vector<Node> findNodes(string key);
@@ -101,12 +68,24 @@ public:
 	~MP2Node();
 
 private:
+	// download message from emulation net
+	static int enqueueWrapper(void *env, char *buff, int size);
+
+	//  ring util functions
+	vector<Node> getMembershipList();
+	size_t hashFunction(string key);
+	void findNeighbors();
+
+	// coordinator dispatches messages to corresponding nodes
+	void dispatchMessages(Message message);
+
 	// handles CURD message
 	void handleCURDMessage(Message& msg);
+		// handles server reply messages
 		void handleReplies(Message& msg);
+		// handles client request messages
 		void handleRequests(Message& msg);
 
-	
 	// handles stabilization message
 	void handleStabilizationMessage(Message& msg);
 
@@ -125,8 +104,26 @@ private:
 	// periodically clean timeout user request. 
 	void cleanTimedOutRequest();
 
+private:
+	// Member representing this member
+	Member *memberNode;
+	Params *par;
+	EmulNet * emulNet;
+	Log * log;
 
+	vector<Node> ring;
+	vector<Node>::iterator selfItr;
+	// Vector holding the next two neighbors in the ring who have my replicas
+	vector<Node> hasMyReplicas;
+	// Vector holding the previous two neighbors in the ring whose replicas I have
+	vector<Node> haveReplicasOf;
 
+	// DHT replicas
+	map<ReplicaType, map<string, string>> mKVS;
+	HashTable * ht;
+	// on-going client CURD request records
+	map<int, tuple<int, int, int, int>> clientRequest;  // (transID: OpType, total, succeed, timestamp)
+	map<int, map<string, int>> read_reply;   // (transID: value, count)
 };
 
 #endif /* MP2NODE_H_ */

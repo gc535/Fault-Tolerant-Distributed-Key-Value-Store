@@ -114,9 +114,13 @@ size_t MP2Node::hashFunction(string key)
  */
 void MP2Node::clientCreate(string key, string value)
 {
-	/*
-	 * Implement this
-	 */
+	std::vector<Node> replicas(std::move(findNodes(key)));
+	for (int idx = 0; idx < replicas.size(); ++idx)
+	{
+		Message msg(g_transID, memberNode->addr, CREATE, key, value, static_cast<ReplicaType>(idx+1));
+		emulNet->ENsend(&memberNode->addr, replicas[idx].getAddress(), msg.toString());
+	}
+	++g_transID;
 }
 
 /**
@@ -130,12 +134,13 @@ void MP2Node::clientCreate(string key, string value)
  */
 void MP2Node::clientRead(string key)
 {
-	/*
-	 * TODO
-	 */
-	// find replicas
-
-	// send read to replicas, w
+	std::vector<Node> replicas(std::move(findNodes(key)));
+	for (int idx = 0; idx < replicas.size(); ++idx)
+	{
+		Message msg(g_transID, memberNode->addr, CREATE, key, "", static_cast<ReplicaType>(idx+1));
+		emulNet->ENsend(&memberNode->addr, replicas[idx].getAddress(), msg.toString());
+	}
+	++g_transID;
 }
 
 /**
@@ -149,9 +154,13 @@ void MP2Node::clientRead(string key)
  */
 void MP2Node::clientUpdate(string key, string value)
 {
-	/*
-	 * Implement this
-	 */
+	std::vector<Node> replicas(std::move(findNodes(key)));
+	for (int idx = 0; idx < replicas.size(); ++idx)
+	{
+		Message msg(g_transID, memberNode->addr, UPDATE, key, value, static_cast<ReplicaType>(idx+1));
+		emulNet->ENsend(&memberNode->addr, replicas[idx].getAddress(), msg.toString());
+	}
+	++g_transID;
 }
 
 /**
@@ -165,9 +174,13 @@ void MP2Node::clientUpdate(string key, string value)
  */
 void MP2Node::clientDelete(string key)
 {
-	/*
-	 * Implement this
-	 */
+	std::vector<Node> replicas(std::move(findNodes(key)));
+	for (int idx = 0; idx < replicas.size(); ++idx)
+	{
+		Message msg(g_transID, memberNode->addr, DELETE, key, "", static_cast<ReplicaType>(idx+1));
+		emulNet->ENsend(&memberNode->addr, replicas[idx].getAddress(), msg.toString());
+	}
+	++g_transID;
 }
 
 /**
@@ -180,10 +193,13 @@ void MP2Node::clientDelete(string key)
  */
 bool MP2Node::createKeyValue(string key, string value, ReplicaType replica)
 {
-	/*
-	 * Implement this
-	 */
-	// Insert key, value, replicaType into the hash table
+	auto& storage = mKVS[replica];
+	if (storage.find(key) == storage.end())
+	{
+		storage[key] = value;
+		return true;
+	}
+	else {return false;}
 }
 
 /**
@@ -196,10 +212,14 @@ bool MP2Node::createKeyValue(string key, string value, ReplicaType replica)
  */
 string MP2Node::readKey(string key)
 {
-	/*
-	 * Implement this
-	 */
-	// Read key from local hash table and return value
+	for (int type = 0; type < 3; type++)
+	{
+		auto& storage = mKVS[type];
+		std::pair<string, string>* reponse = storage.find(key);
+		if ( reponse != storage.end() ) 
+		{ return reponse->second; }
+	}
+	return ""; // return empty string if not found
 }
 
 /**
@@ -212,10 +232,13 @@ string MP2Node::readKey(string key)
  */
 bool MP2Node::updateKeyValue(string key, string value, ReplicaType replica)
 {
-	/*
-	 * Implement this
-	 */
-	// Update key in local hash table and return true or false
+	auto& storage = mKVS[replica];
+	if (storage.find(key) != storage.end())
+	{
+		storage[key] = value;
+		return true;
+	}
+	else {return false;}
 }
 
 /**
@@ -228,10 +251,17 @@ bool MP2Node::updateKeyValue(string key, string value, ReplicaType replica)
  */
 bool MP2Node::deletekey(string key)
 {
-	/*
-	 * Implement this
-	 */
-	// Delete the key from the local hash table
+	for (int type = 0; type < 3; type++)
+	{
+		auto& storage = mKVS[type];
+		std::pair<string, string>* reponse = storage.find(key);
+		if ( reponse != storage.end() ) 
+		{ 
+			storage.erase(key);
+			return true; 
+		}
+	}
+	return false; // return empty string if not found
 }
 
 /**
@@ -274,12 +304,10 @@ void MP2Node::checkMessages()
 		string message(data, data + size);
 		Message msg(message);
 
-		// handle stanilization messgage
 		if (msg.transI == -1)
 		{
 			handleStabilizationMessage(msg);
 		}
-		// handle client message
 		else
 		{
 			handleCURDMessage(msg);
@@ -301,7 +329,7 @@ void MP2Node::checkMessages()
 vector<Node> MP2Node::findNodes(string key)
 {
 	size_t pos = hashFunction(key);
-	vector<Node> addr_vec;
+	std::vector<Node> addr_vec;
 	if (ring.size() >= 3)
 	{
 		// if pos <= min || pos > max, the leader is the min
@@ -357,6 +385,7 @@ int MP2Node::enqueueWrapper(void *env, char *buff, int size)
 	Queue q;
 	return q.enqueue((queue<q_elt> *)env, (void *)buff, size);
 }
+
 /**
  * FUNCTION NAME: stabilizationProtocol
  *
@@ -367,17 +396,12 @@ int MP2Node::enqueueWrapper(void *env, char *buff, int size)
  *				Note:- "CORRECT" replicas implies that every key is replicated in its two neighboring nodes in the ring
  */
 void MP2Node::stabilizationProtocol()
-{
-	/*
-	 * TODO
-	 */
-
-	// go garbage cleanning first
-	doKVSGarbageClean();
-
+{	
 	// send self's replicas to original holders
 	size_t selfHash = hashFunction(memberNode->addr.getAddress());
-	for (int type = 1; type < 3; type++) // hard code range, can be adjust to any fault tolerant configuration
+	for (int type = 1; /*start with SECONDARY*/ 
+	     type < 3; /*end with TERTIARY*/ 
+			 type++) 
 	{
 		// find main replicas node
 		auto main_replica = traverseNodeItr(-type);
@@ -394,6 +418,9 @@ void MP2Node::stabilizationProtocol()
 			}
 		}
 	}
+
+	// go garbage cleanning for obselet local replicas
+	doKVSGarbageClean();
 
 	// send self's primary to two replicas
 	for (auto entry : mKVS.find(PRIMARY)->second)
@@ -435,9 +462,6 @@ void MP2Node::handleCURDMessage(Message &msg)
 	{ handleReplies(msg); }
 	else
 	{ handleRequests(msg); }
-	
-
-	
 }
 
 // handles CURD reply message
@@ -515,7 +539,10 @@ void MP2Node::handleReplies(Message& msg)
 // handles CURD request message
 void MP2Node::handleRequests(Message& msg)
 {
-
+	// TODO: 
+	// For all request, calls the correspinding server side opertaions, get return value
+	// 	1. generate msg reply based on return value
+	// 	2. log based on the return value
 }
 
 
