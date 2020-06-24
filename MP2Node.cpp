@@ -61,47 +61,9 @@ void MP2Node::updateRing()
 	// Run stabilization protocol if the hash table size is greater than zero and if there has been a changed in the ring
 }
 
-/**
- * FUNCTION NAME: getMemberhipList
- *
- * DESCRIPTION: This function goes through the membership list from the Membership protocol/MP1 and
- * 				i) generates the hash code for each member
- * 				ii) populates the ring member in MP2Node class
- * 				It returns a vector of Nodes. Each element in the vector contain the following fields:
- * 				a) Address of the node
- * 				b) Hash code obtained by consistent hashing of the Address
- */
-vector<Node> MP2Node::getMembershipList()
-{
-	unsigned int i;
-	vector<Node> curMemList;
-	for (i = 0; i < this->memberNode->memberList.size(); i++)
-	{
-		Address addressOfThisMember;
-		int id = this->memberNode->memberList.at(i).getid();
-		short port = this->memberNode->memberList.at(i).getport();
-		memcpy(&addressOfThisMember.addr[0], &id, sizeof(int));
-		memcpy(&addressOfThisMember.addr[4], &port, sizeof(short));
-		curMemList.emplace_back(Node(addressOfThisMember));
-	}
-	return curMemList;
-}
-
-/**
- * FUNCTION NAME: hashFunction
- *
- * DESCRIPTION: This functions hashes the key and returns the position on the ring
- * 				HASH FUNCTION USED FOR CONSISTENT HASHING
- *
- * RETURNS:
- * size_t position on the ring
- */
-size_t MP2Node::hashFunction(string key)
-{
-	std::hash<string> hashFunc;
-	size_t ret = hashFunc(key);
-	return ret % RING_SIZE;
-}
+/**************************************************************
+ * 								Client side APIs
+ * ***********************************************************/
 
 /**
  * FUNCTION NAME: clientCreate
@@ -182,6 +144,10 @@ void MP2Node::clientDelete(string key)
 	}
 	++g_transID;
 }
+
+/**************************************************************
+ * 								Server side APIs
+ * ***********************************************************/
 
 /**
  * FUNCTION NAME: createKeyValue
@@ -265,6 +231,87 @@ bool MP2Node::deletekey(string key)
 }
 
 /**
+ * FUNCTION NAME: recvLoop
+ *
+ * DESCRIPTION: Receive messages from EmulNet and push into the queue (mp2q)
+ */
+bool MP2Node::recvLoop()
+{
+	if (memberNode->bFailed)
+	{
+		return false;
+	}
+	else
+	{
+		return emulNet->ENrecv(&(memberNode->addr), this->enqueueWrapper, NULL, 1, &(memberNode->mp2q));
+	}
+}
+
+/**
+ * FUNCTION NAME: findNodes
+ *
+ * DESCRIPTION: Find the replicas of the given keyfunction
+ * 				This function is responsible for finding the replicas of a key
+ */
+vector<Node> MP2Node::findNodes(string key)
+{
+	size_t pos = hashFunction(key);
+	std::vector<Node> addr_vec;
+	if (ring.size() >= 3)
+	{
+		// if pos <= min || pos > max, the leader is the min
+		if (pos <= ring.at(0).getHashCode() || pos > ring.at(ring.size() - 1).getHashCode())
+		{
+			addr_vec.emplace_back(ring.at(0));
+			addr_vec.emplace_back(ring.at(1));
+			addr_vec.emplace_back(ring.at(2));
+		}
+		else
+		{
+			// go through the ring until pos <= node
+			for (int i = 1; i < ring.size(); i++)
+			{
+				Node addr = ring.at(i);
+				if (pos <= addr.getHashCode())
+				{
+					addr_vec.emplace_back(addr);
+					addr_vec.emplace_back(ring.at((i + 1) % ring.size()));
+					addr_vec.emplace_back(ring.at((i + 2) % ring.size()));
+					break;
+				}
+			}
+		}
+	}
+	return addr_vec;
+}
+
+/**
+ * FUNCTION NAME: getMemberhipList
+ *
+ * DESCRIPTION: This function goes through the membership list from the Membership protocol/MP1 and
+ * 				i) generates the hash code for each member
+ * 				ii) populates the ring member in MP2Node class
+ * 				It returns a vector of Nodes. Each element in the vector contain the following fields:
+ * 				a) Address of the node
+ * 				b) Hash code obtained by consistent hashing of the Address
+ */
+vector<Node> MP2Node::getMembershipList()
+{
+	unsigned int i;
+	vector<Node> curMemList;
+	for (i = 0; i < this->memberNode->memberList.size(); i++)
+	{
+		Address addressOfThisMember;
+		int id = this->memberNode->memberList.at(i).getid();
+		short port = this->memberNode->memberList.at(i).getport();
+		memcpy(&addressOfThisMember.addr[0], &id, sizeof(int));
+		memcpy(&addressOfThisMember.addr[4], &port, sizeof(short));
+		curMemList.emplace_back(Node(addressOfThisMember));
+	}
+	return curMemList;
+}
+
+/**
  * FUNCTION NAME: checkMessages
  *
  * DESCRIPTION: This function is the message handler of this node.
@@ -320,138 +367,9 @@ void MP2Node::checkMessages()
 	 */
 }
 
-/**
- * FUNCTION NAME: findNodes
- *
- * DESCRIPTION: Find the replicas of the given keyfunction
- * 				This function is responsible for finding the replicas of a key
- */
-vector<Node> MP2Node::findNodes(string key)
-{
-	size_t pos = hashFunction(key);
-	std::vector<Node> addr_vec;
-	if (ring.size() >= 3)
-	{
-		// if pos <= min || pos > max, the leader is the min
-		if (pos <= ring.at(0).getHashCode() || pos > ring.at(ring.size() - 1).getHashCode())
-		{
-			addr_vec.emplace_back(ring.at(0));
-			addr_vec.emplace_back(ring.at(1));
-			addr_vec.emplace_back(ring.at(2));
-		}
-		else
-		{
-			// go through the ring until pos <= node
-			for (int i = 1; i < ring.size(); i++)
-			{
-				Node addr = ring.at(i);
-				if (pos <= addr.getHashCode())
-				{
-					addr_vec.emplace_back(addr);
-					addr_vec.emplace_back(ring.at((i + 1) % ring.size()));
-					addr_vec.emplace_back(ring.at((i + 2) % ring.size()));
-					break;
-				}
-			}
-		}
-	}
-	return addr_vec;
-}
-
-/**
- * FUNCTION NAME: recvLoop
- *
- * DESCRIPTION: Receive messages from EmulNet and push into the queue (mp2q)
- */
-bool MP2Node::recvLoop()
-{
-	if (memberNode->bFailed)
-	{
-		return false;
-	}
-	else
-	{
-		return emulNet->ENrecv(&(memberNode->addr), this->enqueueWrapper, NULL, 1, &(memberNode->mp2q));
-	}
-}
-
-/**
- * FUNCTION NAME: enqueueWrapper
- *
- * DESCRIPTION: Enqueue the message from Emulnet into the queue of MP2Node
- */
-int MP2Node::enqueueWrapper(void *env, char *buff, int size)
-{
-	Queue q;
-	return q.enqueue((queue<q_elt> *)env, (void *)buff, size);
-}
-
-/**
- * FUNCTION NAME: stabilizationProtocol
- *
- * DESCRIPTION: This runs the stabilization protocol in case of Node joins and leaves
- * 				It ensures that there always 3 copies of all keys in the DHT at all times
- * 				The function does the following:
- *				1) Ensures that there are three "CORRECT" replicas of all the keys in spite of failures and joins
- *				Note:- "CORRECT" replicas implies that every key is replicated in its two neighboring nodes in the ring
- */
-void MP2Node::stabilizationProtocol()
-{	
-	// send self's replicas to original holders
-	size_t selfHash = hashFunction(memberNode->addr.getAddress());
-	for (int type = 1; /*start with SECONDARY*/ 
-	     type < 3; /*end with TERTIARY*/ 
-			 type++) 
-	{
-		// find main replicas node
-		auto main_replica = traverseNodeItr(-type);
-		size_t left = traverseNodeItr(-type - 1)->getHashCode();
-		size_t right = main_replica->getHashCode();
-
-		for (auto entry : mKVS.find((ReplicaType)type)->second)
-		{
-			size_t hashed_key = hashFunction(entry.first);
-			if (rangeFilter(left, right, hashFunction(entry.first)))
-			{
-				Message msg((int)(-1), memberNode->addr, READREPLY, entry.first, entry.second);
-				emulNet->ENsend(&memberNode->addr, main_replica->getAddress(), msg.toString());
-			}
-		}
-	}
-
-	// go garbage cleanning for obselet local replicas
-	doKVSGarbageClean();
-
-	// send self's primary to two replicas
-	for (auto entry : mKVS.find(PRIMARY)->second)
-	{
-		for (int i = 0; i < hasMyReplicas.size(); ++i)
-		{
-			Message msg((int)(-1), memberNode->addr, READREPLY, entry.first, entry.second, (ReplicaType)(i+1));
-			emulNet->ENsend(&memberNode->addr, hasMyReplicas[i].getAddress(), msg.toString());
-		}
-	}
-}
-
-// clean the outdated replicas in each replica container
-void MP2Node::doKVSGarbageClean()
-{
-	// TODO: drop outof range(outdated replicas)
-}
-
-// periodically clean timeout user request. 
-void MP2Node::cleanTimedOutRequest()
-{
-	// TODO: clean map entry timed out (current time - timestamp > tfail)
-}
-
-// get hased value range of a ceratin replica
-pair<size_t, size_t> MP2Node::getReplicaRange(ReplicaType rt)
-{
-	auto front = traverseNodeItr((int)rt - 1);
-	auto end = traverseNodeItr((int)rt);
-	return make_pair(front->nodeHashCode, end->nodeHashCode);
-}
+/**************************************************************
+ * 							Client - Server message handling
+ * ***********************************************************/
 
 // handles CURD message
 void MP2Node::handleCURDMessage(Message &msg)
@@ -464,16 +382,23 @@ void MP2Node::handleCURDMessage(Message &msg)
 	{ handleRequests(msg); }
 }
 
-// handles CURD reply message
+/**
+ * FUNCTION NAME: handleReplies
+ *
+ * DESCRIPTION: This handles CURD reply message.
+ * 				It reports to the user based on if the server reply
+ * 				reaches the quorum. Then logs the operation as success 
+ * 				if quorum is met, or vice versa. 
+ */
 void MP2Node::handleReplies(Message& msg)
 {
 	auto transcation = clientRequest.find(msg.transID)->second;
 	int& type = get<0>(transcation);
 	int& count = get<1>(transcation);
 	int& succeed = get<2>(transcation);
-	if (msg.type == READREPLY)
+	++count;
+	if (msg.type == READREPLY)  // READREPLY is dedicated to stabilization read message. 
 	{
-		count += 1;
 		// cached replies
 		auto cached_replies = read_reply.find(msg.transID)->second;
 		auto recordPtr = cached_replies.find(msg.key);
@@ -505,7 +430,6 @@ void MP2Node::handleReplies(Message& msg)
 	}
 	else if (msg.type == REPLY)
 	{
-		count++;
 		if (msg.success) { succeed++; }
   
 		if (succeed >= 2 || count == 3)  // quorum reached or failed
@@ -536,25 +460,126 @@ void MP2Node::handleReplies(Message& msg)
 	}
 }
 	
-// handles CURD request message
+/**
+ * FUNCTION NAME: handleRequests
+ *
+ * DESCRIPTION: This handles CURD requst message.
+ * 				It commits the client request to local storage
+ * 				Then log the operation result and reply to client. 
+ */
 void MP2Node::handleRequests(Message& msg)
 {
-	// TODO: 
-	// For all request, calls the correspinding server side opertaions, get return value
-	// 	1. generate msg reply based on return value
-	// 	2. log based on the return value
+	// prepare reply message
+	Message reply;
+	reply.transID = msg.transID;
+	reply.fromAddr = memberNode->addr;
+	reply.type = REPLY;
+	reply.success = false;
+	switch (msg.type)
+	{
+	case CREATE:
+		if ( createKeyValue(msg.key, msg.value, msg.replica) )
+		{
+			reply.success = true;
+			log->logCreateSuccess(&memberNode->addr, false, msg.transID, msg.key, msg.value); 
+		}
+		else { log->logCreateFail(&memberNode->addr, false, msg.transID, msg.key, msg.value); }
+		break;
+
+	case UPDATE:
+		if (updateKeyValue(msg.key, msg.value, msg.replica) ) 
+		{
+			reply.success = true; 
+			log->logUpdateSuccess(&memberNode->addr, false, msg.transID, msg.key, msg.value);
+		}
+		else { log->logUpdateFail(&memberNode->addr, false, msg.transID, msg.key, msg.value); }
+		break;
+
+	case READ:
+		reply.value = readKey(msg.key);
+		if ( reply.value != "" ) 
+		{
+			reply.success = true; 
+			log->logReadSuccess(&memberNode->addr, false, msg.transID, msg.key, reply.value);
+		}
+		else { log->logReadFail(&memberNode->addr, false, msg.transID, msg.key); }
+		break;
+	
+	case DELETE:
+		if ( deletekey(msg.key) ) 
+		{
+			reply.success = true; 
+			log->logDeleteSuccess(&memberNode->addr, false, msg.transID, msg.key);		
+		}
+		else { log->logDeleteFail(&memberNode->addr, false, msg.transID, msg.key); }
+		break;
+	
+	default:
+		throw runtime_error("[ERROR]: Unrecogonized request message.");
+	}
+	emulNet->ENsend(&memberNode->addr, &msg.fromAddr, reply.toString());
 }
 
+/**************************************************************
+ * 						Stabilization protocal related
+ * ***********************************************************/
+
+/**
+ * FUNCTION NAME: stabilizationProtocol
+ *
+ * DESCRIPTION: This runs the stabilization protocol in case of Node joins and leaves
+ * 				It ensures that there always 3 copies of all keys in the DHT at all times
+ * 				The function does the following:
+ *				1) Ensures that there are three "CORRECT" replicas of all the keys in spite of failures and joins
+ *				Note:- "CORRECT" replicas implies that every key is replicated in its two neighboring nodes in the ring
+ */
+void MP2Node::stabilizationProtocol()
+{	
+	// send self's replicas to original holders
+	size_t selfHash = hashFunction(memberNode->addr.getAddress());
+	for (int type = 1; /*start with SECONDARY*/ 
+	     type < 3; /*end with TERTIARY*/ 
+			 type++) 
+	{
+		// find main replicas node
+		auto primary_node = traverseNodeItr(-type);
+		std::pair<size_t, size_t> range = getNodeRange(-type);
+
+		for (auto entry : mKVS.find((ReplicaType)type)->second)
+		{
+			size_t hashed_key = hashFunction(entry.first);
+			if (rangeFilter(range.first, range.second, hashFunction(entry.first)))
+			{
+				Message msg((int)(-1), memberNode->addr, READREPLY, entry.first, entry.second, PRIMARY);
+				emulNet->ENsend(&memberNode->addr, primary_node->getAddress(), msg.toString());
+			}
+		}
+	}
+
+	// go garbage cleanning for obselet local replicas
+	doKVSGarbageClean();
+
+	// send self's primary to two replicas
+	for (auto entry : mKVS.find(PRIMARY)->second)
+	{
+		for (int i = 0; i < hasMyReplicas.size(); ++i)
+		{
+			Message msg((int)(-1), memberNode->addr, UPDATE, entry.first, entry.second, (ReplicaType)(i+1));
+			emulNet->ENsend(&memberNode->addr, hasMyReplicas[i].getAddress(), msg.toString());
+		}
+	}
+}
 
 // handles stabilization message
 void MP2Node::handleStabilizationMessage(Message &msg)
 {
-	pair<size_t, size_t> range = getReplicaRange(PRIMARY);
+	pair<size_t, size_t> range = getNodeRange(static_cast<int>(PRIMARY));
 	size_t hashed_key = hashFunction(msg.key);
 	// entry from replica, to recover primary/original replica
 	if (msg.type == READREPLY)
 	{
 		map<string, string>& storage = mKVS.find(PRIMARY)->second;
+		// only recover keys in self's primary range
 		if (rangeFilter(range.first, range.second, hashed_key))
 		{
 			if (storage.find(msg.key) == storage.end())
@@ -566,7 +591,71 @@ void MP2Node::handleStabilizationMessage(Message &msg)
 	{ mKVS.find(msg.replica)->second.emplace(msg.key, msg.value); }
 	else
 	{ throw runtime_error("[ERROR]: Unrecogonized stabilization message."); }
-	
+}
+
+// clean the outdated replicas in each replica container
+void MP2Node::doKVSGarbageClean()
+{
+	for (int type = 0; type < 3; ++type)
+	{
+		std::pair<size_t, size_t> range = getNodeRange(-type);
+		auto& storage = mKVS.find(static_cast<ReplicaType>(type))->second;
+		for (auto itemItr = storage.begin(); itemItr != storage.end(); ++itemItr)
+		{
+			if (!rangeFilter(range.first, range.second, itemItr->first))
+			{	itemItr = storage.erase(itemItr); }
+			else { ++itemItr; }
+		}
+	}
+}
+
+// periodically clean timeout user request. 
+void MP2Node::cleanTimedOutRequest()
+{
+	// TODO: clean map entry timed out (current time - timestamp > tfail)
+}
+
+/**************************************************************************
+ * 													helper functions
+ * ***********************************************************************/ 
+
+/**
+ * FUNCTION NAME: hashFunction
+ *
+ * DESCRIPTION: This functions hashes the key and returns the position on the ring
+ * 				HASH FUNCTION USED FOR CONSISTENT HASHING
+ *
+ * RETURNS:
+ * size_t position on the ring
+ */
+size_t MP2Node::hashFunction(string key)
+{
+	std::hash<string> hashFunc;
+	size_t ret = hashFunc(key);
+	return ret % RING_SIZE;
+}
+
+/**
+ * FUNCTION NAME: enqueueWrapper
+ *
+ * DESCRIPTION: Enqueue the message from Emulnet into the queue of MP2Node
+ */
+int MP2Node::enqueueWrapper(void *env, char *buff, int size)
+{
+	Queue q;
+	return q.enqueue((queue<q_elt> *)env, (void *)buff, size);
+}
+
+/**
+ * FUNCTION NAME: getNodeRange
+ *
+ * DESCRIPTION: find a hash value range of a node that is "dist" away from this node(self)
+ */
+pair<size_t, size_t> MP2Node::getNodeRange(int dist)
+{
+	auto front = traverseNodeItr(dist - 1);
+	auto end = traverseNodeItr(dist);
+	return make_pair(front->nodeHashCode, end->nodeHashCode);
 }
 
 // get iterator of node with a certain distance

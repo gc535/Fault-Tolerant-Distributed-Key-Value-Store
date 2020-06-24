@@ -41,68 +41,63 @@ public:
 	// ring functionalities
 	void updateRing();
 
-	// client side CRUD APIs
+	/* client side CRUD APIs */
 	void clientCreate(string key, string value);
 	void clientRead(string key);
 	void clientUpdate(string key, string value);
 	void clientDelete(string key);
 
-	// receive messages from Emulnet
-	bool recvLoop();
-
-	// handle messages from receiving queue
-	void checkMessages();
-
-	// find the addresses of nodes that are responsible for a key
-	vector<Node> findNodes(string key);
-
-	// server
+	/* server side APIs */
 	bool createKeyValue(string key, string value, ReplicaType replica);
 	string readKey(string key);
 	bool updateKeyValue(string key, string value, ReplicaType replica);
 	bool deletekey(string key);
 
-	// stabilization protocol - handle multiple failures
-	void stabilizationProtocol();
+	// receive messages from Emulnet
+	bool recvLoop();
+	// handle messages from receiving queue
+	void checkMessages();
+	// find the addresses of nodes that are responsible for a key
+	vector<Node> findNodes(string key);
+
+	
 
 	~MP2Node();
 
 private:
-	// download message from emulation net
-	static int enqueueWrapper(void *env, char *buff, int size);
-
-	//  ring util functions
+	/* ring stucture related functions */
 	vector<Node> getMembershipList();
-	size_t hashFunction(string key);
+	// re-populate the hasMyReplicas and haveReplicasOf container with new ring
 	void findNeighbors();
 
+	/* client request related */
+	void handleCURDMessage(Message& msg);
+	// handles server reply messages
+	void handleReplies(Message& msg);
+	// handles client request messages
+	void handleRequests(Message& msg);
 	// coordinator dispatches messages to corresponding nodes
 	void dispatchMessages(Message message);
 
-	// handles CURD message
-	void handleCURDMessage(Message& msg);
-		// handles server reply messages
-		void handleReplies(Message& msg);
-		// handles client request messages
-		void handleRequests(Message& msg);
-
+	/* stabilization protocol related */
+	void stabilizationProtocol();
 	// handles stabilization message
 	void handleStabilizationMessage(Message& msg);
-
 	// clean the outdated replicas in each replica container
 	void doKVSGarbageClean();
-
-	// get hased value range of a ceratin replica
-	pair<size_t, size_t> getReplicaRange(ReplicaType rt);
-
-	// get iterator of node target distance away
-	vector<Node>::iterator traverseNodeItr(int dist);
-
-	// util filter for the replcias' range
-  bool rangeFilter(size_t left, size_t right, size_t key);
-
 	// periodically clean timeout user request. 
 	void cleanTimedOutRequest();
+
+	/* helper functions */
+	size_t hashFunction(string key);
+	// download message from emulation net
+	static int enqueueWrapper(void *env, char *buff, int size);
+	// get hased value range of a node
+	pair<size_t, size_t> getNodeRange(int dist);
+	// get iterator of node target distance away
+	vector<Node>::iterator traverseNodeItr(int dist);
+	// util filter for the replcias' range
+  bool rangeFilter(size_t left, size_t right, size_t key);
 
 private:
 	// Member representing this member
