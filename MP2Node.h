@@ -19,6 +19,7 @@
 #include "Message.h"
 #include "Queue.h"
 #include <exception>
+#include <unordered_map>
 
 /**
  * CLASS NAME: MP2Node
@@ -83,7 +84,7 @@ private:
 	void stabilizationProtocol();
 	// handles stabilization message
 	void handleStabilizationMessage(Message& msg);
-	// clean the outdated replicas in each replica container
+	// clean the out-of-range replicas in each replica container
 	void doKVSGarbageClean();
 	// periodically clean timeout user request. 
 	void cleanTimedOutRequest();

@@ -33,4 +33,5 @@
 
 # Miscellaneous
 *.pdf
-.vscode/
+.vscode
+*.log

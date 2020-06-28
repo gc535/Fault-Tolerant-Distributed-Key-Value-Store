@@ -4,6 +4,7 @@
  * DESCRIPTION: MP2Node class definition
  **********************************/
 #include "MP2Node.h"
+#include <iostream>
 
 /**
  * constructor
@@ -16,6 +17,11 @@ MP2Node::MP2Node(Member *memberNode, Params *par, EmulNet *emulNet, Log *log, Ad
 	this->log = log;
 	ht = new HashTable();
 	this->memberNode->addr = *address;
+
+	ring.emplace_back(Node(this->memberNode->addr));
+	selfItr = ring.begin();
+	for (int type = 0; type < 3; ++type)
+	{ mKVS[static_cast<ReplicaType>(type)] = {}; } 
 }
 
 /**
@@ -38,27 +44,57 @@ MP2Node::~MP2Node()
  */
 void MP2Node::updateRing()
 {
-	/*
-	 * Implement this. Parts of it are already implemented
-	 */
-	vector<Node> curMemList;
-	bool change = false;
+	// construct ring
+	bool changed = false;
+	ring = getMembershipList();
+	sort(ring.begin(), ring.end());
+	
 
-	/*
-	 *  Step 1. Get the current membership list from Membership Protocol / MP1
-	 */
-	curMemList = getMembershipList();
+	auto memberItr = ring.begin();
+	while (memberItr != ring.end() && !(memberItr->nodeAddress == memberNode->addr))
+	{
+		++memberItr;
+	}
+ 
+	if (memberItr->nodeAddress == memberNode->addr)
+	{
+		selfItr = memberItr;
+		for (int type = 1; type < 3; ++type)
+		{
+			// predecessors
+			auto leftNode = *traverseNodeItr(-type);
+			if (haveReplicasOf.size() < type) 
+			{ 
+				haveReplicasOf.push_back(leftNode); 
+				changed = true;	
+			}
+			else if ( !(haveReplicasOf[type-1].nodeAddress == leftNode.nodeAddress) )
+			{
+				haveReplicasOf[type-1] = leftNode;
+				changed = true;
+			}
 
-	/*
-	 * Step 2: Construct the ring
-	 */
-	// Sort the list based on the hashCode
-	sort(curMemList.begin(), curMemList.end());
-
-	/*
-	 * Step 3: Run the stabilization protocol IF REQUIRED
-	 */
-	// Run stabilization protocol if the hash table size is greater than zero and if there has been a changed in the ring
+			// successors
+			auto rightNode = *traverseNodeItr(type);
+			if (hasMyReplicas.size() < type) 
+			{ 
+				hasMyReplicas.push_back(rightNode); 
+				changed = true;	
+			}
+			else if ( !(hasMyReplicas[type-1].nodeAddress == rightNode.nodeAddress) )
+			{
+				hasMyReplicas[type-1] = rightNode;
+				changed = true;
+			}	
+		}
+	}
+	else
+	{
+		throw std::runtime_error("[ERROR]: Corrupted membership list. Cannot find self in the list");
+	}
+	
+	// Run stabilization protocol if there has been a changed in the ring
+	if (changed) { stabilizationProtocol();}
 }
 
 /**************************************************************
@@ -76,15 +112,19 @@ void MP2Node::updateRing()
  */
 void MP2Node::clientCreate(string key, string value)
 {
-	std::vector<Node> replicas(std::move(findNodes(key)));
+	std::vector<Node> replicas = findNodes(key);
 	for (int idx = 0; idx < replicas.size(); ++idx)
 	{
 		Message msg(g_transID, memberNode->addr, CREATE, key, value, static_cast<ReplicaType>(idx+1));
 		emulNet->ENsend(&memberNode->addr, replicas[idx].getAddress(), msg.toString());
 	}
+	// cache client requst
+	clientRequest[g_transID] = std::make_tuple(CREATE, 0, 0, memberNode->heartbeat);
 	++g_transID;
 }
 
+
+// TODO: for all client request, create client_request entry to cache the request for counting quorum reply count
 /**
  * FUNCTION NAME: clientRead
  *
@@ -96,12 +136,16 @@ void MP2Node::clientCreate(string key, string value)
  */
 void MP2Node::clientRead(string key)
 {
-	std::vector<Node> replicas(std::move(findNodes(key)));
+	std::vector<Node> replicas = findNodes(key);
 	for (int idx = 0; idx < replicas.size(); ++idx)
 	{
 		Message msg(g_transID, memberNode->addr, CREATE, key, "", static_cast<ReplicaType>(idx+1));
 		emulNet->ENsend(&memberNode->addr, replicas[idx].getAddress(), msg.toString());
 	}
+	// cache client requst
+	clientRequest[g_transID] = std::make_tuple(READ, 0, 0, memberNode->heartbeat);
+	read_reply[g_transID] = {};
+
 	++g_transID;
 }
 
@@ -116,12 +160,14 @@ void MP2Node::clientRead(string key)
  */
 void MP2Node::clientUpdate(string key, string value)
 {
-	std::vector<Node> replicas(std::move(findNodes(key)));
+	std::vector<Node> replicas = findNodes(key);
 	for (int idx = 0; idx < replicas.size(); ++idx)
 	{
 		Message msg(g_transID, memberNode->addr, UPDATE, key, value, static_cast<ReplicaType>(idx+1));
 		emulNet->ENsend(&memberNode->addr, replicas[idx].getAddress(), msg.toString());
 	}
+	// cache client requst
+	clientRequest[g_transID] = std::make_tuple(UPDATE, 0, 0, memberNode->heartbeat);
 	++g_transID;
 }
 
@@ -136,12 +182,14 @@ void MP2Node::clientUpdate(string key, string value)
  */
 void MP2Node::clientDelete(string key)
 {
-	std::vector<Node> replicas(std::move(findNodes(key)));
+	std::vector<Node> replicas = findNodes(key);
 	for (int idx = 0; idx < replicas.size(); ++idx)
 	{
 		Message msg(g_transID, memberNode->addr, DELETE, key, "", static_cast<ReplicaType>(idx+1));
 		emulNet->ENsend(&memberNode->addr, replicas[idx].getAddress(), msg.toString());
 	}
+	// cache client requst
+	clientRequest[g_transID] = std::make_tuple(DELETE, 0, 0, memberNode->heartbeat);
 	++g_transID;
 }
 
@@ -180,8 +228,8 @@ string MP2Node::readKey(string key)
 {
 	for (int type = 0; type < 3; type++)
 	{
-		auto& storage = mKVS[type];
-		std::pair<string, string>* reponse = storage.find(key);
+		auto& storage = mKVS.find(static_cast<ReplicaType>(type))->second;
+		auto reponse = storage.find(key);
 		if ( reponse != storage.end() ) 
 		{ return reponse->second; }
 	}
@@ -219,8 +267,8 @@ bool MP2Node::deletekey(string key)
 {
 	for (int type = 0; type < 3; type++)
 	{
-		auto& storage = mKVS[type];
-		std::pair<string, string>* reponse = storage.find(key);
+		auto& storage = mKVS.find(static_cast<ReplicaType>(type))->second;
+		auto reponse = storage.find(key);
 		if ( reponse != storage.end() ) 
 		{ 
 			storage.erase(key);
@@ -321,24 +369,10 @@ vector<Node> MP2Node::getMembershipList()
  */
 void MP2Node::checkMessages()
 {
-	/*
-	 * TODO: 
-	 * 1. stablization protocal should has -1 transID
-	 * 	a. read is trying to get the replicas value
-	 *  b. update is to update replicas
-	 *
-	 * 2. All CURD message has positive transID, so log them properly
-	 * 
-	 * 3. Reply message are for counting quorum for that transID. 
-	 */
 	char *data;
 	int size;
+	cleanTimedOutRequest();
 
-	/*
-	 * Declare your local variables here
-	 */
-
-	// dequeue all messages and handle them
 	while (!memberNode->mp2q.empty())
 	{
 		/*
@@ -351,7 +385,7 @@ void MP2Node::checkMessages()
 		string message(data, data + size);
 		Message msg(message);
 
-		if (msg.transI == -1)
+		if (msg.transID == -1)
 		{
 			handleStabilizationMessage(msg);
 		}
@@ -360,11 +394,6 @@ void MP2Node::checkMessages()
 			handleCURDMessage(msg);
 		}
 	}
-
-	/*
-	 * This function should also ensure all READ and UPDATE operation
-	 * get QUORUM replies
-	 */
 }
 
 /**************************************************************
@@ -374,10 +403,10 @@ void MP2Node::checkMessages()
 // handles CURD message
 void MP2Node::handleCURDMessage(Message &msg)
 {
-	// coordinator received replies, ignore if already reached quorum
-	if ( (msg.type == READREPLY || msg.type == REPLY)
-	     && clientRequest.find(msg.transID) != clientRequest.end())
+	// coordinator received replies
+	if ( (msg.type == READREPLY || msg.type == REPLY) )
 	{ handleReplies(msg); }
+	// server received client request
 	else
 	{ handleRequests(msg); }
 }
@@ -392,12 +421,16 @@ void MP2Node::handleCURDMessage(Message &msg)
  */
 void MP2Node::handleReplies(Message& msg)
 {
-	auto transcation = clientRequest.find(msg.transID)->second;
+	auto request_itr = clientRequest.find(msg.transID);
+	// skip if request already be quorum handled or timedout
+	if (request_itr == clientRequest.end()) { return; }
+	
+	auto transcation = request_itr->second;
 	int& type = get<0>(transcation);
 	int& count = get<1>(transcation);
 	int& succeed = get<2>(transcation);
 	++count;
-	if (msg.type == READREPLY)  // READREPLY is dedicated to stabilization read message. 
+	if (msg.type == READREPLY) 
 	{
 		// cached replies
 		auto cached_replies = read_reply.find(msg.transID)->second;
@@ -459,7 +492,7 @@ void MP2Node::handleReplies(Message& msg)
 		}
 	}
 }
-	
+
 /**
  * FUNCTION NAME: handleRequests
  *
@@ -470,11 +503,7 @@ void MP2Node::handleReplies(Message& msg)
 void MP2Node::handleRequests(Message& msg)
 {
 	// prepare reply message
-	Message reply;
-	reply.transID = msg.transID;
-	reply.fromAddr = memberNode->addr;
-	reply.type = REPLY;
-	reply.success = false;
+	Message reply(msg.transID, memberNode->addr, REPLY, false);
 	switch (msg.type)
 	{
 	case CREATE:
@@ -515,7 +544,8 @@ void MP2Node::handleRequests(Message& msg)
 		break;
 	
 	default:
-		throw runtime_error("[ERROR]: Unrecogonized request message.");
+		throw runtime_error("[ERROR]: Unrecogonized request message: \n\t\t\t" 
+												+ msg.toString() + "\n");
 	}
 	emulNet->ENsend(&memberNode->addr, &msg.fromAddr, reply.toString());
 }
@@ -544,7 +574,6 @@ void MP2Node::stabilizationProtocol()
 		// find main replicas node
 		auto primary_node = traverseNodeItr(-type);
 		std::pair<size_t, size_t> range = getNodeRange(-type);
-
 		for (auto entry : mKVS.find((ReplicaType)type)->second)
 		{
 			size_t hashed_key = hashFunction(entry.first);
@@ -593,26 +622,39 @@ void MP2Node::handleStabilizationMessage(Message &msg)
 	{ throw runtime_error("[ERROR]: Unrecogonized stabilization message."); }
 }
 
-// clean the outdated replicas in each replica container
+// clean the out-ofrange replicas in each replica container
 void MP2Node::doKVSGarbageClean()
 {
 	for (int type = 0; type < 3; ++type)
 	{
 		std::pair<size_t, size_t> range = getNodeRange(-type);
 		auto& storage = mKVS.find(static_cast<ReplicaType>(type))->second;
-		for (auto itemItr = storage.begin(); itemItr != storage.end(); ++itemItr)
+		auto itemItr = storage.begin();
+		while ( itemItr != storage.end() )
 		{
-			if (!rangeFilter(range.first, range.second, itemItr->first))
+			if (!rangeFilter(range.first, range.second, hashFunction(itemItr->first)))
 			{	itemItr = storage.erase(itemItr); }
 			else { ++itemItr; }
 		}
 	}
 }
 
-// periodically clean timeout user request. 
+// periodically clean timeout user request.
+// current heartbeat - request timestamp > timeout 
 void MP2Node::cleanTimedOutRequest()
 {
-	// TODO: clean map entry timed out (current time - timestamp > tfail)
+	auto request_itr = clientRequest.begin();
+	while (request_itr != clientRequest.end())
+	{
+		if (request_itr->first != -1 
+				&& memberNode->heartbeat - std::get<3>(request_itr->second) > memberNode->pingCounter);
+		{
+			if (std::get<0>(request_itr->second) == READREPLY) { read_reply.erase(request_itr->first); }
+			request_itr = clientRequest.erase(request_itr);
+			continue;
+		}
+		++request_itr;
+	}
 }
 
 /**************************************************************************
