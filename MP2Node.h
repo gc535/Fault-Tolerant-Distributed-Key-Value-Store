@@ -88,6 +88,7 @@ private:
 	void doKVSGarbageClean();
 	// periodically clean timeout user request. 
 	void cleanTimedOutRequest();
+	
 
 	/* helper functions */
 	size_t hashFunction(string key);
@@ -99,6 +100,8 @@ private:
 	vector<Node>::iterator traverseNodeItr(int dist);
 	// util filter for the replcias' range
   bool rangeFilter(size_t left, size_t right, size_t key);
+	// log transactions
+	void logTranscation(MessageType type, bool success, bool isCoordinator, int transID, std::string key, std::string value="");
 
 private:
 	// Member representing this member
@@ -118,7 +121,7 @@ private:
 	map<ReplicaType, map<string, string>> mKVS;
 	HashTable * ht;
 	// on-going client CURD request records
-	map<int, tuple<int, int, int, int>> clientRequest;  // (transID: OpType, total, succeed, timestamp)
+	map<int, tuple<MessageType, string, string, int, int, int>> clientRequest;  // (transID: key, value, OpType, total, succeed, timestamp)
 	map<int, map<string, int>> read_reply;   // (transID: value, count)
 };
 

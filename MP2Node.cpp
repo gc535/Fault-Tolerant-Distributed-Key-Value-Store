@@ -59,7 +59,7 @@ void MP2Node::updateRing()
 	if (memberItr->nodeAddress == memberNode->addr)
 	{
 		selfItr = memberItr;
-		for (int type = 1; type < 3; ++type)
+		for (size_t type = 1; type < 3; ++type)
 		{
 			// predecessors
 			auto leftNode = *traverseNodeItr(-type);
@@ -113,13 +113,13 @@ void MP2Node::updateRing()
 void MP2Node::clientCreate(string key, string value)
 {
 	std::vector<Node> replicas = findNodes(key);
-	for (int idx = 0; idx < replicas.size(); ++idx)
+	for (size_t idx = 0; idx < replicas.size(); ++idx)
 	{
-		Message msg(g_transID, memberNode->addr, CREATE, key, value, static_cast<ReplicaType>(idx+1));
+		Message msg(g_transID, memberNode->addr, CREATE, key, value, static_cast<ReplicaType>(idx));
 		emulNet->ENsend(&memberNode->addr, replicas[idx].getAddress(), msg.toString());
 	}
 	// cache client requst
-	clientRequest[g_transID] = std::make_tuple(CREATE, 0, 0, memberNode->heartbeat);
+	clientRequest[g_transID] = std::make_tuple(CREATE, key, value, 0, 0, memberNode->heartbeat);
 	++g_transID;
 }
 
@@ -137,13 +137,13 @@ void MP2Node::clientCreate(string key, string value)
 void MP2Node::clientRead(string key)
 {
 	std::vector<Node> replicas = findNodes(key);
-	for (int idx = 0; idx < replicas.size(); ++idx)
+	for (size_t idx = 0; idx < replicas.size(); ++idx)
 	{
-		Message msg(g_transID, memberNode->addr, CREATE, key, "", static_cast<ReplicaType>(idx+1));
+		Message msg(g_transID, memberNode->addr, READ, key, "", static_cast<ReplicaType>(idx));
 		emulNet->ENsend(&memberNode->addr, replicas[idx].getAddress(), msg.toString());
 	}
 	// cache client requst
-	clientRequest[g_transID] = std::make_tuple(READ, 0, 0, memberNode->heartbeat);
+	clientRequest[g_transID] = std::make_tuple(READ, key, "", 0, 0, memberNode->heartbeat);
 	read_reply[g_transID] = {};
 
 	++g_transID;
@@ -161,13 +161,13 @@ void MP2Node::clientRead(string key)
 void MP2Node::clientUpdate(string key, string value)
 {
 	std::vector<Node> replicas = findNodes(key);
-	for (int idx = 0; idx < replicas.size(); ++idx)
+	for (size_t idx = 0; idx < replicas.size(); ++idx)
 	{
-		Message msg(g_transID, memberNode->addr, UPDATE, key, value, static_cast<ReplicaType>(idx+1));
+		Message msg(g_transID, memberNode->addr, UPDATE, key, value, static_cast<ReplicaType>(idx));
 		emulNet->ENsend(&memberNode->addr, replicas[idx].getAddress(), msg.toString());
 	}
 	// cache client requst
-	clientRequest[g_transID] = std::make_tuple(UPDATE, 0, 0, memberNode->heartbeat);
+	clientRequest[g_transID] = std::make_tuple(UPDATE, key, value, 0, 0, memberNode->heartbeat);
 	++g_transID;
 }
 
@@ -183,13 +183,13 @@ void MP2Node::clientUpdate(string key, string value)
 void MP2Node::clientDelete(string key)
 {
 	std::vector<Node> replicas = findNodes(key);
-	for (int idx = 0; idx < replicas.size(); ++idx)
+	for (size_t idx = 0; idx < replicas.size(); ++idx)
 	{
-		Message msg(g_transID, memberNode->addr, DELETE, key, "", static_cast<ReplicaType>(idx+1));
+		Message msg(g_transID, memberNode->addr, DELETE, key, "", static_cast<ReplicaType>(idx));
 		emulNet->ENsend(&memberNode->addr, replicas[idx].getAddress(), msg.toString());
 	}
 	// cache client requst
-	clientRequest[g_transID] = std::make_tuple(DELETE, 0, 0, memberNode->heartbeat);
+	clientRequest[g_transID] = std::make_tuple(DELETE, key, "", 0, 0, memberNode->heartbeat);
 	++g_transID;
 }
 
@@ -275,7 +275,7 @@ bool MP2Node::deletekey(string key)
 			return true; 
 		}
 	}
-	return false; // return empty string if not found
+	return false;
 }
 
 /**
@@ -317,7 +317,7 @@ vector<Node> MP2Node::findNodes(string key)
 		else
 		{
 			// go through the ring until pos <= node
-			for (int i = 1; i < ring.size(); i++)
+			for (size_t i = 1; i < ring.size(); i++)
 			{
 				Node addr = ring.at(i);
 				if (pos <= addr.getHashCode())
@@ -425,25 +425,33 @@ void MP2Node::handleReplies(Message& msg)
 	// skip if request already be quorum handled or timedout
 	if (request_itr == clientRequest.end()) { return; }
 	
-	auto transcation = request_itr->second;
-	int& type = get<0>(transcation);
-	int& count = get<1>(transcation);
-	int& succeed = get<2>(transcation);
+	auto& transcation = request_itr->second;
+	MessageType type = get<0>(transcation);
+	string key = get<1>(transcation);
+	string value = get<2>(transcation);
+	int& count = get<3>(transcation);
+	int& succeed = get<4>(transcation);
 	++count;
 	if (msg.type == READREPLY) 
 	{
+		// unsuccess read from server side reply
+		// TODO: This can be modified to rely on msg.success status
+		if (msg.value == "") { 
+			return;
+		}
+
 		// cached replies
-		auto cached_replies = read_reply.find(msg.transID)->second;
-		auto recordPtr = cached_replies.find(msg.key);
+		auto& cached_replies = read_reply.find(msg.transID)->second;
+		auto recordPtr = cached_replies.find(msg.value);
 		if ( recordPtr == cached_replies.end() )
 		{ cached_replies.emplace(msg.value, 1); }
 		else
 		{
-			recordPtr->second = recordPtr->second + 1;
+			recordPtr->second += 1;
 			if (recordPtr->second >= 2) // hard code quorum reached
 			{ 
-				log->logReadSuccess(&memberNode->addr, true, msg.transID, msg.key, msg.value);
-    
+				logTranscation(READ, true, true, msg.transID, key, msg.value);
+
 				// remove quorum cache after op succeed.
 				clientRequest.erase(msg.transID);
 				read_reply.erase(msg.transID);
@@ -453,7 +461,7 @@ void MP2Node::handleReplies(Message& msg)
   
 		if (count == 3) // all replies, not reach quorum
 		{
-			log->logReadFail(&memberNode->addr, true, msg.transID, msg.key);
+			logTranscation(READ, false, true, msg.transID, key);
   
 			// remove cache after op failure.
 			clientRequest.erase(msg.transID);
@@ -467,27 +475,11 @@ void MP2Node::handleReplies(Message& msg)
   
 		if (succeed >= 2 || count == 3)  // quorum reached or failed
 		{
-			switch (type)
-			{
-			case CREATE:
-				if (succeed >= 2) log->logCreateSuccess(&memberNode->addr, true, msg.transID, msg.key, msg.value);
-				else log->logCreateFail(&memberNode->addr, true, msg.transID, msg.key, msg.value);
-				break;
-    
-			case UPDATE:
-				if (succeed >= 2) log->logUpdateSuccess(&memberNode->addr, true, msg.transID, msg.key, msg.value);
-				else log->logUpdateFail(&memberNode->addr, true, msg.transID, msg.key, msg.value);
-				break;
-     
-			case DELETE:
-				if (succeed >= 2) log->logDeleteSuccess(&memberNode->addr, true, msg.transID, msg.key);
-				else log->logDeleteFail(&memberNode->addr, true, msg.transID, msg.key);
-				break;
-     
-			default:
-			  throw runtime_error("[ERROR]: Unrecogonized message type.");
-				break;
-			}
+			if (succeed >= 2) 
+				logTranscation(type, true, true, msg.transID, key, value);
+			else 
+				logTranscation(type, false, true, msg.transID, key, value);
+			
 			clientRequest.erase(msg.transID);
 		}
 	}
@@ -504,43 +496,34 @@ void MP2Node::handleRequests(Message& msg)
 {
 	// prepare reply message
 	Message reply(msg.transID, memberNode->addr, REPLY, false);
+	reply.key = msg.key;
+	reply.value = msg.value;
 	switch (msg.type)
 	{
 	case CREATE:
-		if ( createKeyValue(msg.key, msg.value, msg.replica) )
-		{
+		if ( createKeyValue(msg.key, msg.value, msg.replica) ) {
 			reply.success = true;
-			log->logCreateSuccess(&memberNode->addr, false, msg.transID, msg.key, msg.value); 
 		}
-		else { log->logCreateFail(&memberNode->addr, false, msg.transID, msg.key, msg.value); }
 		break;
 
 	case UPDATE:
-		if (updateKeyValue(msg.key, msg.value, msg.replica) ) 
-		{
+		if (updateKeyValue(msg.key, msg.value, msg.replica) ) {
 			reply.success = true; 
-			log->logUpdateSuccess(&memberNode->addr, false, msg.transID, msg.key, msg.value);
 		}
-		else { log->logUpdateFail(&memberNode->addr, false, msg.transID, msg.key, msg.value); }
 		break;
 
-	case READ:
+	case READ: // special handling for read reply to coordinator
+		reply.type = READREPLY;
 		reply.value = readKey(msg.key);
-		if ( reply.value != "" ) 
-		{
+		if ( reply.value != "" ) {
 			reply.success = true; 
-			log->logReadSuccess(&memberNode->addr, false, msg.transID, msg.key, reply.value);
 		}
-		else { log->logReadFail(&memberNode->addr, false, msg.transID, msg.key); }
 		break;
 	
 	case DELETE:
-		if ( deletekey(msg.key) ) 
-		{
+		if ( deletekey(msg.key) ) {
 			reply.success = true; 
-			log->logDeleteSuccess(&memberNode->addr, false, msg.transID, msg.key);		
 		}
-		else { log->logDeleteFail(&memberNode->addr, false, msg.transID, msg.key); }
 		break;
 	
 	default:
@@ -548,6 +531,7 @@ void MP2Node::handleRequests(Message& msg)
 												+ msg.toString() + "\n");
 	}
 	emulNet->ENsend(&memberNode->addr, &msg.fromAddr, reply.toString());
+	logTranscation(msg.type, reply.success, false, msg.transID, reply.key, reply.value);
 }
 
 /**************************************************************
@@ -566,7 +550,6 @@ void MP2Node::handleRequests(Message& msg)
 void MP2Node::stabilizationProtocol()
 {	
 	// send self's replicas to original holders
-	size_t selfHash = hashFunction(memberNode->addr.getAddress());
 	for (int type = 1; /*start with SECONDARY*/ 
 	     type < 3; /*end with TERTIARY*/ 
 			 type++) 
@@ -574,9 +557,8 @@ void MP2Node::stabilizationProtocol()
 		// find main replicas node
 		auto primary_node = traverseNodeItr(-type);
 		std::pair<size_t, size_t> range = getNodeRange(-type);
-		for (auto entry : mKVS.find((ReplicaType)type)->second)
+		for (auto& entry : mKVS.find((ReplicaType)type)->second)
 		{
-			size_t hashed_key = hashFunction(entry.first);
 			if (rangeFilter(range.first, range.second, hashFunction(entry.first)))
 			{
 				Message msg((int)(-1), memberNode->addr, READREPLY, entry.first, entry.second, PRIMARY);
@@ -589,9 +571,9 @@ void MP2Node::stabilizationProtocol()
 	doKVSGarbageClean();
 
 	// send self's primary to two replicas
-	for (auto entry : mKVS.find(PRIMARY)->second)
+	for (auto& entry : mKVS.find(PRIMARY)->second)
 	{
-		for (int i = 0; i < hasMyReplicas.size(); ++i)
+		for (size_t i = 0; i < hasMyReplicas.size(); ++i)
 		{
 			Message msg((int)(-1), memberNode->addr, UPDATE, entry.first, entry.second, (ReplicaType)(i+1));
 			emulNet->ENsend(&memberNode->addr, hasMyReplicas[i].getAddress(), msg.toString());
@@ -646,10 +628,17 @@ void MP2Node::cleanTimedOutRequest()
 	auto request_itr = clientRequest.begin();
 	while (request_itr != clientRequest.end())
 	{
-		if (request_itr->first != -1 
-				&& memberNode->heartbeat - std::get<3>(request_itr->second) > memberNode->pingCounter);
+		if (memberNode->heartbeat - std::get<5>(request_itr->second) > memberNode->pingCounter)
 		{
-			if (std::get<0>(request_itr->second) == READREPLY) { read_reply.erase(request_itr->first); }
+			MessageType type = std::get<0>(request_itr->second);
+			std::string key = std::get<1>(request_itr->second);
+			std::string value = std::get<2>(request_itr->second);
+			if (type == READ) 
+			{ 
+				read_reply.erase(request_itr->first); 
+			}
+			// if cache request cleared, then it means it is timeout request, and should log a coordinator failure. 
+			logTranscation(type, false, true, request_itr->first, key, value);
 			request_itr = clientRequest.erase(request_itr);
 			continue;
 		}
@@ -709,10 +698,8 @@ vector<Node>::iterator MP2Node::traverseNodeItr(int dist)
 		while (dist > 0)
 		{
 			target++;
-			if (selfItr == ring.end())
-			{
-				target = ring.begin();
-			}
+			if (target == ring.end())
+			{ target = ring.begin(); }
 			--dist;
 		}
 	}
@@ -720,11 +707,10 @@ vector<Node>::iterator MP2Node::traverseNodeItr(int dist)
 	{
 		while (dist < 0)
 		{
-			target--;
-			if (selfItr == ring.begin())
-			{
-				target = ring.end() - 1;
-			}
+			if (target == ring.begin())
+			{ target = ring.end() - 1; }
+			else
+			{ target--; }
 			++dist;
 		}
 	}
@@ -738,4 +724,42 @@ bool MP2Node::rangeFilter(size_t left, size_t right, size_t key)
 		return ((0 <= key && key <= right) || (key > left));
 	else
 		return (left <= key && key <= right);
+}
+
+// log transactions
+	void MP2Node::logTranscation(MessageType type, bool success, bool isCoordinator, int transID, std::string key, std::string value)
+{
+	switch (type)
+	{
+	case CREATE:
+		if (success)
+			log->logCreateSuccess(&memberNode->addr, isCoordinator, transID, key, value); 
+		else  
+			log->logCreateFail(&memberNode->addr, isCoordinator, transID, key, value);
+		break;
+
+	case UPDATE:
+		if (success)
+			log->logUpdateSuccess(&memberNode->addr, isCoordinator, transID, key, value);
+		else 
+			log->logUpdateFail(&memberNode->addr, isCoordinator, transID, key, value);
+		break;
+
+	case READ: 
+		if (success) 
+			log->logReadSuccess(&memberNode->addr, isCoordinator, transID, key, value);
+		else
+			log->logReadFail(&memberNode->addr, isCoordinator, transID, key);
+		break;
+	
+	case DELETE:
+		if (success)
+			log->logDeleteSuccess(&memberNode->addr, isCoordinator, transID, key);
+		else
+			log->logDeleteFail(&memberNode->addr, isCoordinator, transID, key);
+		break;
+	
+	default:
+		throw runtime_error("[Error]: Trying to log a unknow transaction");
+	}
 }
